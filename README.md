@@ -240,6 +240,8 @@ If you want one machine to do both jobs:
 
 This repository now includes [render.yaml](render.yaml) so you can deploy the API and UI as two web services.
 
+Render uses [requirements-render.txt](requirements-render.txt) for deployment and [runtime.txt](runtime.txt) to pin Python 3.11.9.
+
 ### What gets deployed
 
 - `airquality-api`: FastAPI service for `POST /predict` and `GET /health`

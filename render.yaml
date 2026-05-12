@@ -3,7 +3,7 @@ services:
     name: airquality-api
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-render.txt
     startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
@@ -16,7 +16,7 @@ services:
     name: airquality-ui
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-render.txt
     startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT
     envVars:
       - key: PYTHONUNBUFFERED
