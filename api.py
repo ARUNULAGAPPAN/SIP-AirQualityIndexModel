@@ -16,6 +16,7 @@ mobile app backend to retrieve stored data.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Union
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -98,8 +99,8 @@ def predict(payload: PredictionRequest) -> dict:
         
         # Store sensor reading and prediction to MongoDB
         try:
-            sensor_id = mongo_storage.insert_sensor_reading(payload.dict())
-            prediction_id = mongo_storage.insert_prediction(sensor_id, payload.dict(), result)
+            sensor_id = mongo_storage.insert_sensor_reading(payload.model_dump())
+            prediction_id = mongo_storage.insert_prediction(sensor_id, payload.model_dump(), result)
             result["stored"] = {
                 "sensor_id": sensor_id,
                 "prediction_id": prediction_id,
@@ -114,11 +115,33 @@ def predict(payload: PredictionRequest) -> dict:
 
 
 @app.post("/ingest")
-def ingest(payload: PredictionRequest) -> dict:
-    """Store a hardware payload to MongoDB for later processing."""
+def ingest(payload: PredictionRequest | list[PredictionRequest]) -> dict:
+    """Store hardware payload(s) to MongoDB for later processing.
+    
+    Accepts either:
+    - Single payload: {"mq135_adc": 512, ...}
+    - Bulk array: [{"mq135_adc": 512, ...}, {"mq135_adc": 520, ...}]
+    """
     try:
-        sensor_id = mongo_storage.insert_sensor_reading(payload.dict())
-        return {"status": "ok", "sensor_id": sensor_id}
+        # Handle bulk array of payloads
+        if isinstance(payload, list):
+            sensor_ids = []
+            for item in payload:
+                if isinstance(item, dict):
+                    sensor_id = mongo_storage.insert_sensor_reading(item)
+                    sensor_ids.append(sensor_id)
+                else:
+                    sensor_id = mongo_storage.insert_sensor_reading(item.model_dump())
+                    sensor_ids.append(sensor_id)
+            return {
+                "status": "ok",
+                "count": len(sensor_ids),
+                "sensor_ids": sensor_ids,
+            }
+        # Handle single payload
+        else:
+            sensor_id = mongo_storage.insert_sensor_reading(payload.model_dump())
+            return {"status": "ok", "sensor_id": sensor_id}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
