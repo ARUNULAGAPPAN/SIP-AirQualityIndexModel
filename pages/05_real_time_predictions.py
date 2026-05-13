@@ -136,13 +136,19 @@ with col_aqi_details:
     st.metric("Longitude", f"{location_data['longitude']}")
     st.metric("Location Factor", f"{location_data['factor']}")
     
-    # Sensor contributions breakdown
+    # Sensor contributions breakdown (numeric values only)
     st.caption("**Sensor Contributions**")
     contributions = current["sensor_contributions"]
-    contrib_sorted = sorted(contributions.items(), key=lambda x: x[1], reverse=True)
+    
+    # Filter only numeric contributions for sorting
+    numeric_contributions = {
+        k: v for k, v in contributions.items() 
+        if isinstance(v, (int, float)) and "_aqi" in k
+    }
+    contrib_sorted = sorted(numeric_contributions.items(), key=lambda x: x[1], reverse=True)
     
     for sensor_name, contrib_value in contrib_sorted:
-        sensor_label = sensor_name.replace("_", " ").title()
+        sensor_label = sensor_name.replace("_aqi", "").replace("_", " ").title()
         st.metric(sensor_label, f"{contrib_value:.1f}", label_visibility="collapsed")
 
 
