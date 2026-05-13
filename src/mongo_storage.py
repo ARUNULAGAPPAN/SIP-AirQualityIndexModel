@@ -24,7 +24,12 @@ DB_NAME = "air_quality"
 
 def get_client() -> MongoClient:
     """Get or create MongoDB client with connection pooling."""
-    return MongoClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
+    return MongoClient(
+        MONGODB_URL,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=20000,
+        tlsAllowInvalidCertificates=True,
+    )
 
 
 def init_db() -> None:
