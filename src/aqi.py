@@ -150,14 +150,12 @@ def mq135_pollution_index(mq135_ppm: float, safe_limit: float = MQ135_SAFE_LIMIT
         - mq135_ppm = 10 (half of limit) → index = 200 (worse)
         - mq135_ppm = 40 (twice limit) → index = 50 (better)
     """
-    if mq135_ppm is None or mq135_ppm <= 0:
+    if mq135_ppm is None or mq135_ppm < 0:
         return 0.0
     
-    # Formula: (SafeLimit / MQ135_ppm) * 100
-    # When MQ135 is at safe_limit, index = 100 (moderate)
-    # When MQ135 is below limit, index < 100 (better)
-    # When MQ135 exceeds limit, index > 100 (worse)
-    index = (safe_limit / float(mq135_ppm)) * 100
+    # Formula: (MQ135_ppm / 10) * 100, capped at 500
+    # Scaling: 0 ppm → 0, 10 ppm → 100, 50+ ppm → 500
+    index = (float(mq135_ppm) / 10.0) * 100
     
     return min(500, index)  # Cap at hazardous level
 

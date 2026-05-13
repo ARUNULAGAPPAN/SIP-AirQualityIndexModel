@@ -101,26 +101,33 @@ def compute_aqi_from_sensors(
     # Overall AQI is the maximum (EPA standard method)
     final_aqi, primary_pollutant, _ = max(scores, key=lambda t: t[0])
     
-    # Calculate weather adjustment factor
+    # Calculate weather adjustment factor (only if GPS is valid)
     weather_adjustment = 1.0
+    use_weather = True
     
-    # Wind speed: >5 m/s helps dispersion (reduces AQI by ~10%)
-    if weather.wind_speed > 5:
-        weather_adjustment *= 0.95
+    # Validate GPS coordinates (reject test/invalid coordinates)
+    if location is not None:
+        if location.latitude == -90 or location.longitude == -180:
+            use_weather = False  # Invalid polar test coordinates
     
-    # Humidity: Very high (>80%) or very low (<20%) can worsen readings (increase AQI by ~5%)
-    if weather.humidity > 80 or weather.humidity < 20:
-        weather_adjustment *= 1.05
-    
-    # Atmospheric pressure: Low pressure (bad weather) can trap pollutants (increase AQI by ~8%)
-    if weather.pressure < 1000:
-        weather_adjustment *= 1.08
-    
-    # Temperature effect: Extreme temperatures can worsen air stagnation
-    if sensor.temperature > 35:
-        weather_adjustment *= 1.05  # Heat amplifies pollution
-    elif sensor.temperature < 5:
-        weather_adjustment *= 1.03  # Cold can trap pollutants
+    if use_weather:
+        # Wind speed: >5 m/s helps dispersion (reduces AQI by ~10%)
+        if weather.wind_speed > 5:
+            weather_adjustment *= 0.95
+        
+        # Humidity: Very high (>80%) or very low (<20%) can worsen readings (increase AQI by ~5%)
+        if weather.humidity > 80 or weather.humidity < 20:
+            weather_adjustment *= 1.05
+        
+        # Atmospheric pressure: Low pressure (bad weather) can trap pollutants (increase AQI by ~8%)
+        if weather.pressure < 1000:
+            weather_adjustment *= 1.08
+        
+        # Temperature effect: Extreme temperatures can worsen air stagnation
+        if sensor.temperature > 35:
+            weather_adjustment *= 1.05  # Heat amplifies pollution
+        elif sensor.temperature < 5:
+            weather_adjustment *= 1.03  # Cold can trap pollutants
     
     # Apply weather adjustment
     adjusted_aqi = int(final_aqi * weather_adjustment)
@@ -141,6 +148,7 @@ def compute_aqi_from_sensors(
         "primary_pollutant": primary_pollutant,
         "final_aqi": final_aqi,
         "weather_adjustment_factor": round(weather_adjustment, 3),
+        "weather_adjustment_applied": use_weather,
         "wind_speed_ms": round(weather.wind_speed, 1),
         "humidity_percent": round(weather.humidity, 1),
         "pressure_hpa": round(weather.pressure, 1),
