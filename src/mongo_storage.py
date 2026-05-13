@@ -47,11 +47,11 @@ def init_db() -> None:
         # Create indexes for fast queries
         sensor_col = db["sensor_readings"]
         sensor_col.create_index("timestamp")
-        sensor_col.create_index([("latitude", "2dsphere"), ("longitude", "2dsphere")])
+        sensor_col.create_index([("location", "2dsphere")])
         
         prediction_col = db["predictions"]
         prediction_col.create_index("timestamp")
-        prediction_col.create_index([("latitude", "2dsphere"), ("longitude", "2dsphere")])
+        prediction_col.create_index([("location", "2dsphere")])
         prediction_col.create_index("sensor_reading_id")
         
         client.close()
@@ -70,6 +70,10 @@ def insert_sensor_reading(payload: dict) -> str:
         doc = {
             **payload,
             "timestamp": datetime.utcnow(),
+            "location": {
+                "type": "Point",
+                "coordinates": [payload.get("longitude", 0), payload.get("latitude", 0)],
+            },
         }
         result = col.insert_one(doc)
         client.close()
@@ -92,6 +96,10 @@ def insert_prediction(sensor_reading_id: str, payload: dict, prediction_result: 
             "prediction": prediction_result,
             "latitude": payload.get("latitude"),
             "longitude": payload.get("longitude"),
+            "location": {
+                "type": "Point",
+                "coordinates": [payload.get("longitude", 0), payload.get("latitude", 0)],
+            },
             "aqi": prediction_result.get("current", {}).get("aqi"),
             "category": prediction_result.get("current", {}).get("category"),
             "primary_pollutant": prediction_result.get("current", {}).get("sensor_contributions", {}).get("primary_pollutant"),
@@ -140,7 +148,7 @@ def get_predictions_by_location(latitude: float, longitude: float, radius_km: fl
                         "type": "Point",
                         "coordinates": [longitude, latitude],
                     },
-                    "$maxDistance": radius_km * 1000,
+                    "$maxDistance": int(radius_km * 1000),
                 }
             }
         }
@@ -189,13 +197,20 @@ def get_node_stats(latitude: float, longitude: float, hours: int = 24) -> dict:
         
         cutoff_time = datetime.utcnow() - timedelta(hours=hours)
         
-        # Find predictions near this node
+        # Find predictions near this node using geo-spatial query
         pipeline = [
             {
                 "$match": {
                     "timestamp": {"$gte": cutoff_time},
-                    "latitude": {"$gte": latitude - 0.1, "$lte": latitude + 0.1},
-                    "longitude": {"$gte": longitude - 0.1, "$lte": longitude + 0.1},
+                    "location": {
+                        "$near": {
+                            "$geometry": {
+                                "type": "Point",
+                                "coordinates": [longitude, latitude],
+                            },
+                            "$maxDistance": 1000,  # 1km radius for node stats
+                        }
+                    }
                 }
             },
             {
