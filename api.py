@@ -19,6 +19,18 @@ from src.weather_api import get_weather_from_api
 app = FastAPI(title="Air Quality Prediction API", version="1.0.0")
 
 
+@app.get("/")
+def root() -> dict:
+    return {
+        "service": "Air Quality Prediction API",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "predict": "/predict",
+        },
+    }
+
+
 class PredictionRequest(BaseModel):
     mq135_adc: float = Field(..., ge=0)
     air_quality_ppm: float = Field(..., ge=0)

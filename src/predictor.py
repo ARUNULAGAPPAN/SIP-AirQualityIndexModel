@@ -72,88 +72,79 @@ def compute_aqi_from_sensors(
     weather: WeatherData,
     location: Optional[LocationContext] = None,
 ) -> Tuple[int, dict]:
-    """Compute AQI using all 8 sensor attributes + weather (multi-feature correlation).
+    """Compute AQI using EPA standard formulas with sensor data.
+    
+    Uses:
+    - PM2.5 AQI (EPA formula)
+    - CO AQI (EPA formula)
+    - MQ135 Custom Pollution Index
+    
+    Final AQI = max(AQI_PM2.5, AQI_CO, AQI_MQ135)
     
     Returns:
-        (aqi_value, sensor_contributions) where contributions show which sensors influenced AQI most
+        (aqi_value, sensor_contributions) where contributions show which pollutants influenced AQI most
     """
+    from src.aqi import pollutant_aqi, mq135_pollution_index, AQI_CATEGORIES
     
-    # Normalize sensor readings to 0-100 scale
-    # ADC values typically 0-4095; PPM 0-10+; voltage 0-5V
+    # Calculate individual AQI scores using EPA formulas
+    aqi_pm25, category_pm25 = pollutant_aqi(sensor.estimated_pm25, "PM2.5")
+    aqi_co, category_co = pollutant_aqi(sensor.co_ppm, "CO")
+    aqi_mq135 = mq135_pollution_index(sensor.air_quality_ppm)
     
-    # MQ135: Air quality (maps to AQI-like scale)
-    mq135_normalized = min(100, (sensor.mq135_adc / 4095) * 150)
+    # Get primary pollutant (the one causing highest AQI)
+    scores = [
+        (aqi_pm25, "PM2.5", sensor.estimated_pm25),
+        (aqi_co, "CO", sensor.co_ppm),
+        (int(aqi_mq135), "MQ135", sensor.air_quality_ppm),
+    ]
     
-    # Air Quality PPM: Direct pollution indicator
-    aq_ppm_normalized = min(100, sensor.air_quality_ppm * 30)
+    # Overall AQI is the maximum (EPA standard method)
+    final_aqi, primary_pollutant, _ = max(scores, key=lambda t: t[0])
     
-    # MQ7/CO: Carbon monoxide (0-10 ppm typical)
-    co_normalized = min(100, (sensor.co_ppm / 10) * 100)
+    # Calculate weather adjustment factor
+    weather_adjustment = 1.0
     
-    # Dust sensor: Particulate matter
-    dust_normalized = min(100, (sensor.dust_adc / 4095) * 120)
-    dust_voltage_normalized = min(100, (sensor.dust_voltage / 5) * 100)
+    # Wind speed: >5 m/s helps dispersion (reduces AQI by ~10%)
+    if weather.wind_speed > 5:
+        weather_adjustment *= 0.95
     
-    # PM2.5: Direct particulate (0-35 is "good", >250 is hazardous)
-    pm25_normalized = min(100, (sensor.estimated_pm25 / 35) * 50)
-    
-    # Temperature effect: Heat can worsen air stagnation (affects pollutant concentration)
-    # Optimal ~20°C; worse at extremes
-    temp_effect = 1.0
-    if sensor.temperature > 30:
-        temp_effect = 1.1 + (sensor.temperature - 30) * 0.02
-    elif sensor.temperature < 10:
-        temp_effect = 1.05 + (10 - sensor.temperature) * 0.01
-    
-    # Weather mitigating factors
-    # Wind speed: >5 m/s helps dispersion (reduces AQI effect by 10%)
-    wind_mitigation = 0.9 if weather.wind_speed > 5 else 1.0
-    
-    # Humidity: Very high (>80%) or very low (<20%) can worsen readings
-    humidity_factor = 1.0
+    # Humidity: Very high (>80%) or very low (<20%) can worsen readings (increase AQI by ~5%)
     if weather.humidity > 80 or weather.humidity < 20:
-        humidity_factor = 1.05
+        weather_adjustment *= 1.05
     
-    # Atmospheric pressure: Low pressure (bad weather) can trap pollutants
-    pressure_factor = 1.0
+    # Atmospheric pressure: Low pressure (bad weather) can trap pollutants (increase AQI by ~8%)
     if weather.pressure < 1000:
-        pressure_factor = 1.08
-
-    location_factor = _location_factor(location)
+        weather_adjustment *= 1.08
     
-    # Weighted AQI calculation
-    weights = {
-        "mq135": 0.20,
-        "aq_ppm": 0.15,
-        "co": 0.25,
-        "dust_adc": 0.15,
-        "dust_voltage": 0.10,
-        "pm25": 0.15,
-    }
+    # Temperature effect: Extreme temperatures can worsen air stagnation
+    if sensor.temperature > 35:
+        weather_adjustment *= 1.05  # Heat amplifies pollution
+    elif sensor.temperature < 5:
+        weather_adjustment *= 1.03  # Cold can trap pollutants
     
-    base_aqi = (
-        weights["mq135"] * mq135_normalized +
-        weights["aq_ppm"] * aq_ppm_normalized +
-        weights["co"] * co_normalized +
-        weights["dust_adc"] * dust_normalized +
-        weights["dust_voltage"] * dust_voltage_normalized +
-        weights["pm25"] * pm25_normalized
-    )
-    
-    # Apply weather and temperature factors
-    adjusted_aqi = base_aqi * temp_effect * wind_mitigation * humidity_factor * pressure_factor * location_factor
-    
-    # Scale to EPA AQI range (0-500+)
-    final_aqi = int(max(0, min(500, adjusted_aqi * 5)))
+    # Apply weather adjustment
+    adjusted_aqi = int(final_aqi * weather_adjustment)
+    final_aqi = max(0, min(500, adjusted_aqi))  # Clamp to 0-500 range
     
     contributions = {
-        "mq135": round(mq135_normalized * weights["mq135"], 1),
-        "air_quality_ppm": round(aq_ppm_normalized * weights["aq_ppm"], 1),
-        "co": round(co_normalized * weights["co"], 1),
-        "dust_adc": round(dust_normalized * weights["dust_adc"], 1),
-        "dust_voltage": round(dust_voltage_normalized * weights["dust_voltage"], 1),
-        "pm25": round(pm25_normalized * weights["pm25"], 1),
-        "location": round((location_factor - 1.0) * 100, 1),
+        "PM2.5_aqi": aqi_pm25,
+        "PM2.5_value_ug_m3": round(sensor.estimated_pm25, 2),
+        "PM2.5_category": category_pm25,
+        
+        "CO_aqi": aqi_co,
+        "CO_value_ppm": round(sensor.co_ppm, 3),
+        "CO_category": category_co,
+        
+        "MQ135_aqi": int(aqi_mq135),
+        "MQ135_value_ppm": round(sensor.air_quality_ppm, 2),
+        
+        "primary_pollutant": primary_pollutant,
+        "final_aqi": final_aqi,
+        "weather_adjustment_factor": round(weather_adjustment, 3),
+        "wind_speed_ms": round(weather.wind_speed, 1),
+        "humidity_percent": round(weather.humidity, 1),
+        "pressure_hpa": round(weather.pressure, 1),
+        "temperature_celsius": round(sensor.temperature, 1),
     }
     
     return final_aqi, contributions
