@@ -14,9 +14,19 @@ from pydantic import BaseModel, Field
 
 from src.predictor import LocationContext, SensorReading, generate_full_advisory
 from src.weather_api import get_weather_from_api
+from src import storage
 
 
 app = FastAPI(title="Air Quality Prediction API", version="1.0.0")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    try:
+        storage.init_db()
+    except Exception:
+        # If DB initialization fails, startup should continue; ingestion will error later
+        pass
 
 
 @app.get("/")
@@ -65,11 +75,37 @@ def predict(payload: PredictionRequest) -> dict:
         )
         location = LocationContext(latitude=payload.latitude, longitude=payload.longitude)
         weather = get_weather_from_api(payload.latitude, payload.longitude)
+        # Persist incoming hardware reading for later rendering/analysis
+        try:
+            storage.insert_reading(payload.dict())
+        except Exception:
+            # Non-fatal: storage failures should not prevent predictions
+            pass
         return generate_full_advisory(
             current_sensor=sensor,
             weather=weather,
             location=location,
             forecast_hours=payload.forecast_hours,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/ingest")
+def ingest(payload: PredictionRequest) -> dict:
+    """Store a hardware payload and return stored id for later retrieval by mobile clients."""
+    try:
+        rowid = storage.insert_reading(payload.dict())
+        return {"status": "ok", "id": rowid}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/readings")
+def readings(limit: int = 100) -> dict:
+    """Return the most recent hardware readings for rendering on mobile apps."""
+    try:
+        rows = storage.get_recent(limit=limit)
+        return {"count": len(rows), "rows": rows}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
