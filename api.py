@@ -229,3 +229,20 @@ def predictions_by_time(
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/predictions/locations-forecast")
+def get_locations_forecast(forecast_hours: int = Query(4, ge=1, le=6)) -> dict:
+    """Fetch the two distinct sensor locations and generate short-term forecasts.
+    
+    Returns forecasts for each location based on latest sensor readings.
+    """
+    try:
+        result = mongo_storage.get_distinct_locations_and_forecast(forecast_hours=forecast_hours)
+        return {
+            "count": len(result.get("locations", [])),
+            "forecast_hours": forecast_hours,
+            "locations": result.get("locations", []),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -11,12 +11,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import API_INGEST_URL, API_PREDICT_URL
 from src.predictor import LocationContext, SensorReading, WeatherData, generate_full_advisory, get_aqi_category_name, AQI_CATEGORIES
+from src.mongo_storage import get_distinct_locations_and_forecast, get_aggregated_readings_for_location
 
 # ==================== SESSION STATE ====================
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = time.time()
 if "auto_refresh_enabled" not in st.session_state:
     st.session_state.auto_refresh_enabled = True
+if "selected_sensor_index" not in st.session_state:
+    st.session_state.selected_sensor_index = 0
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(page_title="Real-time Sensor Predictions", page_icon="📡", layout="wide")
@@ -31,24 +34,44 @@ with col_header_right:
 
 st.divider()
 
-# ==================== LIVE DATA FETCH ====================
-@st.cache_data(ttl=10)  # Cache for 10 seconds to avoid hammering the API
-def fetch_live_prediction(latitude: float, longitude: float, forecast_hours: int = 4) -> dict | None:
-    """Fetch live prediction from API endpoint."""
+# ==================== FETCH SENSOR LOCATIONS ====================
+@st.cache_data(ttl=30)  # Cache for 30 seconds
+def fetch_available_sensors() -> list[dict]:
+    """Fetch the two distinct sensor locations from database."""
     try:
+        from src.mongo_storage import get_distinct_locations_and_forecast
+        result = get_distinct_locations_and_forecast(forecast_hours=4)
+        return result.get("locations", [])
+    except Exception as e:
+        st.error(f"Error fetching sensor locations: {e}")
+        return []
+
+# ==================== LIVE DATA FETCH ====================
+def fetch_live_prediction_from_reading(latitude: float, longitude: float, forecast_hours: int = 4) -> dict | None:
+    """Fetch aggregated readings (20 latest) and predict using actual data."""
+    try:
+        # Get the 20 latest readings for this location from database, aggregated
+        aggregated_reading = get_aggregated_readings_for_location(latitude, longitude, count=20)
+        
+        if not aggregated_reading:
+            st.warning(f"No readings found for location ({latitude:.4f}, {longitude:.4f})")
+            return None
+        
+        # Use aggregated sensor data from the database
         payload = {
-            "mq135_adc": 1299,
-            "air_quality_ppm": 1.27,
-            "mq7_adc": 331,
-            "co_ppm": 0.23,
-            "dust_adc": 737,
-            "dust_voltage": 0.59,
-            "estimated_pm25": 0.97,
-            "temperature": 23.68,
+            "mq135_adc": aggregated_reading.get("mq135_adc", 0),
+            "air_quality_ppm": aggregated_reading.get("air_quality_ppm", 0),
+            "mq7_adc": aggregated_reading.get("mq7_adc", 0),
+            "co_ppm": aggregated_reading.get("co_ppm", 0),
+            "dust_adc": aggregated_reading.get("dust_adc", 0),
+            "dust_voltage": aggregated_reading.get("dust_voltage", 0),
+            "estimated_pm25": aggregated_reading.get("estimated_pm25", 0),
+            "temperature": aggregated_reading.get("temperature", 22),
             "latitude": latitude,
             "longitude": longitude,
             "forecast_hours": forecast_hours,
         }
+        
         response = requests.post(
             API_PREDICT_URL,
             json=payload,
@@ -80,11 +103,13 @@ def advisory_from_api_response(response: dict) -> dict:
 # Demo mode toggle
 use_demo = st.toggle("🎮 Use Demo Mode (Simulated Hardware)", value=True, help="Toggle to switch between simulated and real hardware data")
 
-st.sidebar.header("📍 Location")
-latitude = st.sidebar.number_input("Latitude", value=23.0225, format="%.5f")
-longitude = st.sidebar.number_input("Longitude", value=72.5714, format="%.5f")
+if use_demo:
+    st.sidebar.header("📍 Location")
+    latitude = st.sidebar.number_input("Latitude", value=23.0225, format="%.5f")
+    longitude = st.sidebar.number_input("Longitude", value=72.5714, format="%.5f")
+    
+    location = LocationContext(latitude=latitude, longitude=longitude)
 
-location = LocationContext(latitude=latitude, longitude=longitude)
 
 if use_demo:
     # Demo/simulated sensor data
@@ -107,23 +132,90 @@ if use_demo:
     )
     
     st.info("🎮 **Demo Mode**: Using simulated sensor data. For real hardware, toggle off and integrate API endpoint.")
+    
+    st.sidebar.header("📍 Location")
+    latitude = st.sidebar.number_input("Latitude", value=23.0225, format="%.5f")
+    longitude = st.sidebar.number_input("Longitude", value=72.5714, format="%.5f")
+    location = LocationContext(latitude=latitude, longitude=longitude)
 else:
-    # Hardware mode: fetch live data from API
+    # Hardware mode: Select from two real sensor nodes
     st.sidebar.header("⚙️ Hardware Settings")
+    
+    # Fetch available sensor locations
+    available_sensors = fetch_available_sensors()
+    
+    if not available_sensors:
+        st.error("❌ No sensor readings found in database. Please ensure hardware is sending data via `/ingest` endpoint.")
+        st.stop()
+    
+    # Create sensor selector
+    sensor_options = []
+    for idx, sensor_data in enumerate(available_sensors):
+        lat = sensor_data.get("latitude", 0)
+        lon = sensor_data.get("longitude", 0)
+        latest_reading = sensor_data.get("latest_reading", {})
+        aqi_current = sensor_data.get("forecast", {}).get("current_aqi", "N/A")
+        sensor_options.append(f"Sensor {idx+1}: ({lat:.4f}, {lon:.4f}) - AQI: {aqi_current}")
+    
+    selected_sensor_label = st.sidebar.selectbox(
+        "Select Sensor Node",
+        options=sensor_options,
+        index=st.session_state.selected_sensor_index,
+        help="Choose which sensor node to display predictions for"
+    )
+    
+    # Extract selected sensor index
+    selected_index = sensor_options.index(selected_sensor_label)
+    st.session_state.selected_sensor_index = selected_index
+    selected_sensor = available_sensors[selected_index]
+    
+    latitude = selected_sensor["latitude"]
+    longitude = selected_sensor["longitude"]
+    location = LocationContext(latitude=latitude, longitude=longitude)
+    
+    # Auto-refresh control
     auto_refresh = st.sidebar.checkbox("🔄 Auto-Refresh (every 10s)", value=True, help="Automatically refresh live data from API")
     if st.sidebar.button("🔄 Refresh Now", key="manual_refresh"):
         st.cache_data.clear()
     
     st.warning(
-        f"⚠️ **Hardware Mode Active**: Fetching live predictions from `{API_PREDICT_URL}`"
+        f"⚠️ **Hardware Mode Active**: Fetching live predictions for Sensor at ({latitude:.4f}, {longitude:.4f})"
     )
     
-    # Fetch live data from API
-    api_response = fetch_live_prediction(latitude, longitude, forecast_hours=4)
-    
+    # Fetch live prediction using actual sensor data
+    api_response = fetch_live_prediction_from_reading(latitude, longitude, forecast_hours=4)
+
     if api_response:
         advisory = advisory_from_api_response(api_response)
+        st.session_state.last_refresh = time.time()
         st.success("✅ Connected to API - showing live predictions")
+
+        # Populate local sensor/weather variables from API so all UI widgets reflect live values
+        try:
+            current_api = advisory.get("current", {})
+            sensors_api = current_api.get("sensors", {})
+            weather_api = current_api.get("weather", {})
+
+            sensor = SensorReading(
+                mq135_adc=float(sensors_api.get("mq135_adc", 0)),
+                air_quality_ppm=float(sensors_api.get("air_quality_ppm", 0)),
+                mq7_adc=float(sensors_api.get("mq7_adc", 0)),
+                co_ppm=float(sensors_api.get("co_ppm", 0)),
+                dust_adc=float(sensors_api.get("dust_adc", 0)),
+                dust_voltage=float(sensors_api.get("dust_voltage", 0)),
+                estimated_pm25=float(sensors_api.get("pm25", 0)),
+                temperature=float(sensors_api.get("temperature", 0)),
+            )
+
+            weather = WeatherData(
+                temperature=float(weather_api.get("temperature", 0)),
+                humidity=float(weather_api.get("humidity", 0)),
+                wind_speed=float(weather_api.get("wind_speed", 0)),
+                pressure=float(weather_api.get("pressure", 0)),
+            )
+        except Exception:
+            # If mapping fails, silently continue and rely on advisory values
+            pass
     else:
         st.error(
             "❌ Failed to fetch live data from API. Please check:\n"
@@ -152,6 +244,7 @@ else:
         advisory = generate_full_advisory(sensor, weather, location=location, forecast_hours=4)
 
 
+
 # Forecast horizon selector for the weather-style trend view
 forecast_hours = st.radio(
     "Forecast Horizon",
@@ -162,10 +255,10 @@ forecast_hours = st.radio(
     help="Choose a shorter or day-style AQI forecast",
 )
 
-# Generate advisory (demo mode or refetch with new horizon)
+# Generate advisory (demo mode only; hardware mode already has advisory from API)
 if use_demo:
     advisory = generate_full_advisory(sensor, weather, location=location, forecast_hours=forecast_hours)
-# Hardware mode already has advisory from API (uses 4-hour default)
+
 
 
 st.divider()
