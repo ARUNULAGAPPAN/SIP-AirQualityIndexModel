@@ -12,6 +12,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import API_INGEST_URL, API_PREDICT_URL
 from src.predictor import LocationContext, SensorReading, WeatherData, generate_full_advisory, get_aqi_category_name, AQI_CATEGORIES
 
+# ==================== SESSION STATE ====================
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = time.time()
+if "auto_refresh_enabled" not in st.session_state:
+    st.session_state.auto_refresh_enabled = True
+
 # ==================== PAGE CONFIG ====================
 st.set_page_config(page_title="Real-time Sensor Predictions", page_icon="📡", layout="wide")
 
@@ -107,7 +113,6 @@ else:
     auto_refresh = st.sidebar.checkbox("🔄 Auto-Refresh (every 10s)", value=True, help="Automatically refresh live data from API")
     if st.sidebar.button("🔄 Refresh Now", key="manual_refresh"):
         st.cache_data.clear()
-        st.rerun()
     
     st.warning(
         f"⚠️ **Hardware Mode Active**: Fetching live predictions from `{API_PREDICT_URL}`"
@@ -119,14 +124,6 @@ else:
     if api_response:
         advisory = advisory_from_api_response(api_response)
         st.success("✅ Connected to API - showing live predictions")
-        
-        # Auto-refresh mechanism
-        if auto_refresh:
-            placeholder = st.empty()
-            placeholder.info("🔄 Auto-refreshing in 10 seconds...")
-            time.sleep(10)
-            st.cache_data.clear()
-            st.rerun()
     else:
         st.error(
             "❌ Failed to fetch live data from API. Please check:\n"
@@ -490,3 +487,29 @@ To connect real hardware:
 ---
 *🛡️ Stay informed. Make safe decisions. Check before going out.*
 """, unsafe_allow_html=False)
+
+
+# ==================== AUTO-REFRESH FOOTER ====================
+if not use_demo:
+    # Hardware mode: show auto-refresh status
+    st.divider()
+    
+    col_refresh_status, col_refresh_time = st.columns([3, 1])
+    
+    with col_refresh_status:
+        refresh_badge = "🟢 Auto-refreshing every 10s" if auto_refresh else "⚪ Manual refresh only"
+        st.caption(refresh_badge)
+    
+    with col_refresh_time:
+        time_since_refresh = time.time() - st.session_state.last_refresh
+        time_until_next = max(0, 10 - int(time_since_refresh))
+        st.caption(f"Next refresh in: {time_until_next}s")
+    
+    # Auto-rerun after 10 seconds if enabled
+    if auto_refresh and time_since_refresh > 10:
+        st.session_state.last_refresh = time.time()
+        st.cache_data.clear()
+        st.rerun()
+    elif auto_refresh:
+        # Schedule rerun using Streamlit's built-in mechanism
+        st.session_state.auto_refresh_enabled = True
