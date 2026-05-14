@@ -4,9 +4,12 @@ import plotly.graph_objects as go
 from pathlib import Path
 import sys
 from datetime import datetime
+import requests
+import time
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from config import API_INGEST_URL, API_PREDICT_URL
 from src.predictor import LocationContext, SensorReading, WeatherData, generate_full_advisory, get_aqi_category_name, AQI_CATEGORIES
 
 # ==================== PAGE CONFIG ====================
@@ -22,7 +25,52 @@ with col_header_right:
 
 st.divider()
 
+# ==================== LIVE DATA FETCH ====================
+@st.cache_data(ttl=10)  # Cache for 10 seconds to avoid hammering the API
+def fetch_live_prediction(latitude: float, longitude: float, forecast_hours: int = 4) -> dict | None:
+    """Fetch live prediction from API endpoint."""
+    try:
+        payload = {
+            "mq135_adc": 1299,
+            "air_quality_ppm": 1.27,
+            "mq7_adc": 331,
+            "co_ppm": 0.23,
+            "dust_adc": 737,
+            "dust_voltage": 0.59,
+            "estimated_pm25": 0.97,
+            "temperature": 23.68,
+            "latitude": latitude,
+            "longitude": longitude,
+            "forecast_hours": forecast_hours,
+        }
+        response = requests.post(
+            API_PREDICT_URL,
+            json=payload,
+            timeout=15,
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.warning(f"API returned {response.status_code}: {response.text[:100]}")
+            return None
+    except requests.exceptions.ConnectionError:
+        st.error("❌ Cannot connect to API. Is the server running?")
+        return None
+    except requests.exceptions.Timeout:
+        st.error("❌ API request timed out. Server may be slow.")
+        return None
+    except Exception as e:
+        st.error(f"❌ Error fetching live data: {str(e)}")
+        return None
+
+
+def advisory_from_api_response(response: dict) -> dict:
+    """Convert API response to advisory format."""
+    return response
+
+
 # ==================== DATA INPUT SECTION ====================
+
 # Demo mode toggle
 use_demo = st.toggle("🎮 Use Demo Mode (Simulated Hardware)", value=True, help="Toggle to switch between simulated and real hardware data")
 
@@ -54,27 +102,74 @@ if use_demo:
     
     st.info("🎮 **Demo Mode**: Using simulated sensor data. For real hardware, toggle off and integrate API endpoint.")
 else:
-    st.warning("⚠️ **Hardware Mode**: Connect your hardware API endpoint. See PREDICTIONS_README.md for integration guide.")
-    # Placeholder for real hardware data
-    sensor = SensorReading(
-        mq135_adc=1299,
-        air_quality_ppm=1.27,
-        mq7_adc=331,
-        co_ppm=0.23,
-        dust_adc=737,
-        dust_voltage=0.59,
-        estimated_pm25=0.97,
-        temperature=23.68,
+    # Hardware mode: fetch live data from API
+    st.sidebar.header("⚙️ Hardware Settings")
+    auto_refresh = st.sidebar.checkbox("🔄 Auto-Refresh (every 10s)", value=True, help="Automatically refresh live data from API")
+    if st.sidebar.button("🔄 Refresh Now", key="manual_refresh"):
+        st.cache_data.clear()
+        st.rerun()
+    
+    st.warning(
+        f"⚠️ **Hardware Mode Active**: Fetching live predictions from `{API_PREDICT_URL}`"
     )
-    weather = WeatherData(
-        temperature=23.68,
-        humidity=65.0,
-        wind_speed=3.5,
-        pressure=1013.25,
-    )
+    
+    # Fetch live data from API
+    api_response = fetch_live_prediction(latitude, longitude, forecast_hours=4)
+    
+    if api_response:
+        advisory = advisory_from_api_response(api_response)
+        st.success("✅ Connected to API - showing live predictions")
+        
+        # Auto-refresh mechanism
+        if auto_refresh:
+            placeholder = st.empty()
+            placeholder.info("🔄 Auto-refreshing in 10 seconds...")
+            time.sleep(10)
+            st.cache_data.clear()
+            st.rerun()
+    else:
+        st.error(
+            "❌ Failed to fetch live data from API. Please check:\n"
+            f"1. API is running at `{API_PREDICT_URL}`\n"
+            "2. Hardware is sending data to the API\n"
+            "3. Network connectivity is available"
+        )
+        # Fallback to demo data on API failure
+        sensor = SensorReading(
+            mq135_adc=1299,
+            air_quality_ppm=1.27,
+            mq7_adc=331,
+            co_ppm=0.23,
+            dust_adc=737,
+            dust_voltage=0.59,
+            estimated_pm25=0.97,
+            temperature=23.68,
+        )
+        weather = WeatherData(
+            temperature=23.68,
+            humidity=65.0,
+            wind_speed=3.5,
+            pressure=1013.25,
+        )
+        # Generate advisory locally as fallback
+        advisory = generate_full_advisory(sensor, weather, location=location, forecast_hours=4)
 
-# Generate advisory from sensor data
-advisory = generate_full_advisory(sensor, weather, location=location, forecast_hours=4)
+
+# Forecast horizon selector for the weather-style trend view
+forecast_hours = st.radio(
+    "Forecast Horizon",
+    options=[4, 12, 24],
+    index=0,
+    horizontal=True,
+    format_func=lambda hours: f"{hours}-hour view" if hours < 24 else "24-hour day view",
+    help="Choose a shorter or day-style AQI forecast",
+)
+
+# Generate advisory (demo mode or refetch with new horizon)
+if use_demo:
+    advisory = generate_full_advisory(sensor, weather, location=location, forecast_hours=forecast_hours)
+# Hardware mode already has advisory from API (uses 4-hour default)
+
 
 st.divider()
 
@@ -201,56 +296,132 @@ with col_w4:
 
 st.divider()
 
-# ==================== 4-HOUR FORECAST SECTION ====================
-st.header("⏰ 4-Hour AQI Forecast")
+# ==================== AQI FORECAST SECTION ====================
+st.header(f"⏰ {forecast_hours}-Hour AQI Forecast")
+st.caption("Weather-style AQI trend view with colored risk bands and forecast cards.")
 
 forecast_data = advisory["forecast"]
 peak_forecast = advisory["peak_forecast"]
-
-# Forecast line chart
 forecast_df = pd.DataFrame(forecast_data)
 
-fig_forecast = go.Figure()
+# Add presentation helpers
+forecast_df["hour_label"] = forecast_df["hour_ahead"].apply(lambda h: f"+{h}h")
+forecast_df["aqi_color"] = forecast_df["predicted_aqi"].apply(
+    lambda aqi_value: "#2e7d32" if aqi_value <= 50 else
+    "#f9a825" if aqi_value <= 100 else
+    "#ef6c00" if aqi_value <= 150 else
+    "#d32f2f" if aqi_value <= 200 else
+    "#6a1b9a"
+)
+forecast_df["category_short"] = forecast_df["category"].replace({
+    "Good": "Good",
+    "Moderate": "Moderate",
+    "Unhealthy for Sensitive Groups": "Sensitive",
+    "Unhealthy": "Unhealthy",
+    "Very Unhealthy": "Very Unhealthy",
+    "Hazardous": "Hazardous",
+})
 
-fig_forecast.add_trace(
-    go.Scatter(
-        x=forecast_df["hour_ahead"],
-        y=forecast_df["predicted_aqi"],
-        mode="lines+markers+text",
-        name="Forecasted AQI",
-        line=dict(color="steelblue", width=4),
-        marker=dict(size=14, symbol="circle"),
-        text=forecast_df["predicted_aqi"],
-        textposition="top center",
-        fill="tozeroy",
-        fillcolor="rgba(70, 130, 180, 0.15)",
+current_style = (
+    "#2e7d32" if aqi <= 50 else
+    "#f9a825" if aqi <= 100 else
+    "#ef6c00" if aqi <= 150 else
+    "#d32f2f" if aqi <= 200 else
+    "#6a1b9a"
+)
+
+summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+with summary_col1:
+    st.metric("Now", f"{aqi}", f"{category}")
+with summary_col2:
+    st.metric("Peak", f"{peak_forecast['aqi']}", f"+{peak_forecast['hour_ahead']}h")
+with summary_col3:
+    st.metric("Average", f"{int(forecast_df['predicted_aqi'].mean())}", f"{forecast_hours}h trend")
+with summary_col4:
+    st.metric("Confidence", f"{int(forecast_df['confidence'].mean())}%", "Model estimate")
+
+forecast_tabs = st.tabs(["Trend", "Forecast Cards", "Table View"])
+
+with forecast_tabs[0]:
+    fig_forecast = go.Figure()
+
+    fig_forecast.add_trace(
+        go.Scatter(
+            x=forecast_df["hour_ahead"],
+            y=forecast_df["predicted_aqi"],
+            mode="lines+markers+text",
+            name="Forecasted AQI",
+            line=dict(color=current_style, width=4, shape="spline"),
+            marker=dict(size=13, color=forecast_df["aqi_color"], line=dict(width=2, color="white")),
+            text=forecast_df["predicted_aqi"],
+            textposition="top center",
+            hovertemplate="Hour +%{x}<br>AQI: %{y}<extra></extra>",
+            fill="tozeroy",
+            fillcolor="rgba(33, 150, 243, 0.10)",
+        )
     )
-)
 
-# Add threshold zones
-fig_forecast.add_hrect(y0=0, y1=50, fillcolor="green", opacity=0.1, layer="below", annotation_text="Good", annotation_position="left")
-fig_forecast.add_hrect(y0=51, y1=100, fillcolor="yellow", opacity=0.1, layer="below", annotation_text="Moderate", annotation_position="left")
-fig_forecast.add_hrect(y0=101, y1=150, fillcolor="orange", opacity=0.1, layer="below", annotation_text="Unhealthy", annotation_position="left")
-fig_forecast.add_hrect(y0=151, y1=200, fillcolor="red", opacity=0.1, layer="below", annotation_text="Very Unhealthy", annotation_position="left")
-fig_forecast.add_hrect(y0=201, y1=500, fillcolor="purple", opacity=0.1, layer="below", annotation_text="Hazardous", annotation_position="left")
+    # Add threshold zones for interpretation
+    threshold_bands = [
+        (0, 50, "rgba(46, 125, 50, 0.08)", "Good"),
+        (50, 100, "rgba(249, 168, 37, 0.08)", "Moderate"),
+        (100, 150, "rgba(239, 108, 0, 0.08)", "Sensitive"),
+        (150, 200, "rgba(211, 47, 47, 0.08)", "Unhealthy"),
+        (200, 500, "rgba(106, 27, 154, 0.08)", "Hazardous"),
+    ]
+    for y0, y1, fillcolor, label in threshold_bands:
+        fig_forecast.add_hrect(y0=y0, y1=y1, fillcolor=fillcolor, opacity=1.0, layer="below", line_width=0)
+        fig_forecast.add_annotation(x=0.15, xref="paper", y=(y0 + y1) / 2, yref="y", text=label, showarrow=False, font=dict(size=10, color="#6b7280"), xanchor="left")
 
-fig_forecast.update_layout(
-    title=None,
-    xaxis_title="Hours Ahead",
-    yaxis_title="Air Quality Index (AQI)",
-    template="plotly_white",
-    height=350,
-    hovermode="x unified",
-    showlegend=False,
-)
+    fig_forecast.update_layout(
+        title=None,
+        xaxis=dict(
+            title="Hours Ahead",
+            tickmode="array",
+            tickvals=forecast_df["hour_ahead"],
+            ticktext=forecast_df["hour_label"],
+            showgrid=False,
+            zeroline=False,
+        ),
+        yaxis=dict(
+            title="AQI",
+            range=[0, max(150, int(forecast_df["predicted_aqi"].max() * 1.25))],
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.07)",
+            zeroline=False,
+        ),
+        template="plotly_white",
+        height=390,
+        hovermode="x unified",
+        showlegend=False,
+        margin=dict(l=20, r=20, t=20, b=20),
+    )
 
-st.plotly_chart(fig_forecast, use_container_width=True)
+    st.plotly_chart(fig_forecast, use_container_width=True)
 
-# Forecast table
-col_table_left, col_table_right = st.columns([3, 1])
+with forecast_tabs[1]:
+    step = max(1, len(forecast_df) // 8)
+    card_df = forecast_df.iloc[::step].head(8).copy()
 
-with col_table_left:
-    st.caption("**Hourly Breakdown**")
+    card_cols = st.columns(len(card_df))
+    for idx, (_, row) in enumerate(card_df.iterrows()):
+        with card_cols[idx]:
+            st.markdown(
+                f"""
+                <div style='padding:1rem;border-radius:1rem;background:linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.96));border:1px solid rgba(148,163,184,0.18);box-shadow:0 8px 24px rgba(15,23,42,0.06);min-height:170px;'>
+                    <div style='font-size:0.9rem;color:#64748b;margin-bottom:0.35rem;'>{row['hour_label']}</div>
+                    <div style='font-size:1.8rem;font-weight:700;color:{row['aqi_color']};line-height:1;'>{int(row['predicted_aqi'])}</div>
+                    <div style='font-size:0.95rem;font-weight:600;color:#0f172a;margin-top:0.45rem;'>{row['category_short']}</div>
+                    <div style='font-size:0.8rem;color:#64748b;margin-top:0.25rem;'>Confidence: {int(row['confidence'])}%</div>
+                    <div style='margin-top:0.75rem;height:8px;border-radius:999px;background:rgba(148,163,184,0.18);overflow:hidden;'>
+                        <div style='width:{min(100, int(row['predicted_aqi'] / 5 * 100))}%;height:100%;border-radius:999px;background:{row['aqi_color']};'></div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+with forecast_tabs[2]:
     forecast_display = forecast_df.copy()
     forecast_display["Confidence"] = forecast_display["confidence"].apply(lambda x: f"{int(x)}%")
     forecast_display = forecast_display.rename(columns={
@@ -258,18 +429,12 @@ with col_table_left:
         "predicted_aqi": "AQI",
         "category": "Health Impact",
     })
-    
+
     st.dataframe(
         forecast_display[["Hours Ahead", "AQI", "Health Impact", "Confidence"]],
         use_container_width=True,
         hide_index=True,
     )
-
-with col_table_right:
-    st.caption("**Peak Forecast**")
-    st.metric("Peak AQI", peak_forecast["aqi"])
-    st.metric("At Hour", f"+{peak_forecast['hour_ahead']}h")
-    st.metric("Category", peak_forecast["category"])
 
 st.divider()
 

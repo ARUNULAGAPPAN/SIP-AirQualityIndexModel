@@ -1,4 +1,10 @@
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
@@ -20,6 +26,10 @@ DEFAULT_TARGET_COL = "PM2.5"
 
 THEME_COLOR = "#1f77b4"
 ACCENT_COLOR = "#ff7f0e"
+
+API_BASE_URL = os.getenv("AIRQUALITY_API_BASE_URL", "https://airquality-api-4njf.onrender.com").rstrip("/")
+API_PREDICT_URL = f"{API_BASE_URL}/predict"
+API_INGEST_URL = f"{API_BASE_URL}/ingest"
 
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
