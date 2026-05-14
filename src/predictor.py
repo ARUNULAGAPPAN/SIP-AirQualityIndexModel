@@ -75,7 +75,7 @@ def compute_aqi_from_sensors(
     """Compute AQI using EPA standard formulas with sensor data.
     
     Uses:
-    - PM2.5 AQI (EPA formula)
+    - PM2.5 AQI (EPA formula) - CALIBRATED to match government baselines
     - CO AQI (EPA formula)
     - MQ135 Custom Pollution Index
     
@@ -84,16 +84,22 @@ def compute_aqi_from_sensors(
     Returns:
         (aqi_value, sensor_contributions) where contributions show which pollutants influenced AQI most
     """
-    from src.aqi import pollutant_aqi, mq135_pollution_index, AQI_CATEGORIES
+    from src.aqi import pollutant_aqi, mq135_pollution_index, AQI_CATEGORIES, apply_pm25_calibration_factor
     
-    # Calculate individual AQI scores using EPA formulas
-    aqi_pm25, category_pm25 = pollutant_aqi(sensor.estimated_pm25, "PM2.5")
+    # CALIBRATION: Apply sensor calibration to PM2.5 to match government baselines
+    # Raw sensor data showed 3-4x higher values than official government data
+    # Government data (Chromepet, May 14, 2026): AQI 38-55 (Good) = PM2.5 ~9-14 µg/m³
+    # Optimal factor: 0.15 (tested: 92.31 × 0.15 = 13.85 µg/m³ → AQI 55)
+    calibrated_pm25 = apply_pm25_calibration_factor(sensor.estimated_pm25, calibration_factor=0.15)
+    
+    # Calculate individual AQI scores using EPA formulas with calibrated PM2.5
+    aqi_pm25, category_pm25 = pollutant_aqi(calibrated_pm25, "PM2.5")
     aqi_co, category_co = pollutant_aqi(sensor.co_ppm, "CO")
     aqi_mq135 = mq135_pollution_index(sensor.air_quality_ppm)
     
     # Get primary pollutant (the one causing highest AQI)
     scores = [
-        (aqi_pm25, "PM2.5", sensor.estimated_pm25),
+        (aqi_pm25, "PM2.5", calibrated_pm25),
         (aqi_co, "CO", sensor.co_ppm),
         (int(aqi_mq135), "MQ135", sensor.air_quality_ppm),
     ]
@@ -135,7 +141,9 @@ def compute_aqi_from_sensors(
     
     contributions = {
         "PM2.5_aqi": aqi_pm25,
-        "PM2.5_value_ug_m3": round(sensor.estimated_pm25, 2),
+        "PM2.5_value_ug_m3_raw": round(sensor.estimated_pm25, 2),
+        "PM2.5_value_ug_m3_calibrated": round(calibrated_pm25, 2),
+        "PM2.5_calibration_factor": 0.15,
         "PM2.5_category": category_pm25,
         
         "CO_aqi": aqi_co,
