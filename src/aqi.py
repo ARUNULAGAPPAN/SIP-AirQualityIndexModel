@@ -186,19 +186,19 @@ def calibrate_pm25_from_dust_voltage(dust_voltage: float) -> float:
     return max(0, pm25)  # Ensure non-negative
 
 
-def apply_pm25_calibration_factor(estimated_pm25: float, calibration_factor: float = 0.35) -> float:
+def apply_pm25_calibration_factor(estimated_pm25: float, calibration_factor: float = 0.15) -> float:
     """Apply calibration factor to match government baseline data.
     
     Government data for Chromepet, Chennai (May 14, 2026):
     - Reported AQI: 38-55 (Good/Satisfactory)
-    - Corresponding PM2.5: ~12-35 µg/m³
+    - Corresponding PM2.5: ~9-14 µg/m³
     
     Sensors were showing 3-4x higher values, suggesting uncalibrated hardware.
     This function applies calibration to align with government baselines.
     
     Args:
         estimated_pm25: Original PM2.5 from sensor hardware
-        calibration_factor: Multiplicative factor (default 0.35 to match govt data)
+        calibration_factor: Multiplicative factor (default 0.15 to match govt data)
     
     Returns:
         Calibrated PM2.5 in µg/m³
